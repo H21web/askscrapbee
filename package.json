@@ -4,7 +4,7 @@
   "description": "Dynamic scraper for iask.ai",
   "main": "api/scrape.js",
   "dependencies": {
-    "puppeteer": "^21.0.0"
+    "puppeteer": "^24.16.2"
   },
   "engines": {
     "node": "22.x"
