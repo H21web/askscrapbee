@@ -4,8 +4,7 @@
   "description": "Dynamic scraper for iask.ai",
   "main": "api/scrape.js",
   "dependencies": {
-    "puppeteer": "^24.16.2",
-    "@sparticuz/chromium": "^131.0.0"
+    "playwright-chromium": "^1.40.0"
   },
   "engines": {
     "node": "22.x"
