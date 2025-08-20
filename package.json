@@ -1,7 +1,7 @@
 {
-  "name": "iask-scraper",
+  "name": "iask-scraper", 
   "version": "1.0.0",
-  "description": "Dynamic scraper for iask.ai",
+  "description": "iask.ai content extractor",
   "main": "api/scrape.js",
   "dependencies": {
     "jsdom": "^23.0.0",
