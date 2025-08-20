@@ -19,36 +19,39 @@ module.exports = async (req, res) => {
 
   const url = `https://iask.ai/q?mode=question&options[detail_level]=concise&q=${encodeURIComponent(query)}`;
   
-  // Simple polling: Check every 3 seconds, max 5 attempts (15 seconds total)
-  for (let attempt = 1; attempt <= 5; attempt++) {
-    console.log(`Attempt ${attempt}: Checking for content...`);
+  // Check every 2.5 seconds, max 6 attempts (15 seconds total)
+  for (let attempt = 1; attempt <= 6; attempt++) {
+    console.log(`Attempt ${attempt}: Looking for ANY content...`);
     
-    // Wait before each attempt (except first)
     if (attempt > 1) {
-      await sleep(3000); // 3 seconds
+      await sleep(2500); // 2.5 seconds
     }
     
     try {
-      // Fetch the page
       const response = await fetch(url, {
         headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Accept': 'text/html',
+          'Cache-Control': 'no-cache'
         }
       });
       
       if (!response.ok) continue;
       
       const html = await response.text();
-      const content = getCleanOutputText(html);
+      const content = findAnyContent(html);
       
-      // If we found clean content with 30+ characters, return it
-      if (content && content.length >= 30) {
+      if (content && content.length >= 20) { // Lower threshold
+        console.log(`✅ Found content: "${content.substring(0, 50)}..."`);
+        
         return res.status(200).json({
           success: true,
           text: content,
           query: query,
           attempt: attempt,
-          timestamp: new Date().toISOString()
+          waitTime: (attempt - 1) * 2500,
+          timestamp: new Date().toISOString(),
+          textLength: content.length
         });
       }
       
@@ -57,148 +60,140 @@ module.exports = async (req, res) => {
     }
   }
   
-  // No content found after all attempts
   return res.status(404).json({
     error: 'No content found',
-    message: 'Could not find clean content in #output div after 15 seconds',
+    message: 'Could not extract any readable content from iask.ai',
     query: query
   });
 };
 
-// Enhanced function to extract CLEAN text from #output div
-function getCleanOutputText(html) {
+// AGGRESSIVE content finder - finds content even mixed with UI
+function findAnyContent(html) {
   try {
     const dom = new JSDOM(html);
-    const document = dom.window.document;
-    const outputDiv = document.querySelector('#output');
+    const doc = dom.window.document;
     
-    if (!outputDiv) {
-      console.log('No #output div found');
-      return null;
-    }
+    console.log('🔍 Searching for content...');
     
-    // REMOVE unwanted elements BEFORE extracting text
-    const unwantedElements = outputDiv.querySelectorAll(
-      'style, script, button, a, .spinner, [class*="spinner"], [class*="share"], [class*="email"], sup, sub'
-    );
-    unwantedElements.forEach(el => el.remove());
-    
-    // Look for actual content paragraphs
-    const paragraphs = outputDiv.querySelectorAll('p, div');
-    let cleanText = '';
-    
-    for (const p of paragraphs) {
-      let text = p.textContent || '';
+    // Strategy 1: Look for #output div
+    let outputDiv = doc.querySelector('#output');
+    if (outputDiv) {
+      console.log('📦 Found #output div');
       
-      // Skip if it's clearly UI/CSS content
-      if (isUIOrCSS(text)) continue;
+      // Get raw text and clean it
+      let rawText = outputDiv.textContent || '';
+      let cleaned = aggressiveClean(rawText);
       
-      // Clean the text
-      text = deepClean(text);
+      console.log(`📝 Raw text length: ${rawText.length}`);
+      console.log(`🧹 Cleaned text length: ${cleaned.length}`);
+      console.log(`📄 First 100 chars: "${cleaned.substring(0, 100)}"`);
       
-      // If it's substantial and clean, use it
-      if (text.length >= 30 && isRealContent(text)) {
-        cleanText = text;
-        break; // Take the first good paragraph
+      if (cleaned.length >= 20) {
+        return cleaned;
       }
     }
     
-    // If no good paragraphs, try the whole div but clean it heavily
-    if (!cleanText) {
-      let fullText = outputDiv.textContent || '';
-      fullText = deepClean(fullText);
-      
-      if (fullText.length >= 30 && isRealContent(fullText)) {
-        // Take first substantial sentence
-        const sentences = fullText.split(/[.!?]+/).filter(s => s.trim().length > 20);
-        if (sentences.length > 0) {
-          cleanText = sentences[0].trim() + '.';
+    // Strategy 2: Look for any substantial text blocks
+    const textSelectors = [
+      'main', 'article', '.content', '.answer', 'section', 
+      'div[class*="content"]', 'div[class*="answer"]', 'div[class*="result"]'
+    ];
+    
+    for (const selector of textSelectors) {
+      const elements = doc.querySelectorAll(selector);
+      for (const el of elements) {
+        let text = el.textContent || '';
+        let cleaned = aggressiveClean(text);
+        
+        if (cleaned.length >= 20) {
+          console.log(`✅ Found content in ${selector}`);
+          return cleaned;
         }
       }
     }
     
-    console.log(`Clean content found: ${cleanText.length} characters`);
-    return cleanText || null;
+    console.log('❌ No content found');
+    return null;
     
   } catch (error) {
-    console.log('Error extracting text:', error.message);
+    console.log('❌ Error:', error.message);
     return null;
   }
 }
 
-// Check if text is UI/CSS content
-function isUIOrCSS(text) {
-  const uiPatterns = [
-    /\.(spinner|css|animation)/,
-    /@keyframes/,
-    /transform:|animation:|cubic-bezier/,
-    /translateY|translate\(/,
-    /animation-delay|animation-timing/,
-    /Add at least one email/,
-    /Share Answer/,
-    /Email this answer/
-  ];
-  
-  return uiPatterns.some(pattern => pattern.test(text));
-}
-
-// Deep cleaning function
-function deepClean(text) {
+// AGGRESSIVE cleaning - removes junk but keeps real content
+function aggressiveClean(text) {
   if (!text) return '';
   
-  // Remove CSS and animations
-  text = text.replace(/\.[a-zA-Z_][a-zA-Z0-9_]*\{[^}]*\}/g, ''); // CSS classes
-  text = text.replace(/@keyframes[^}]*\{[^}]*\}/g, ''); // CSS keyframes
-  text = text.replace(/animation[^;]*;/g, ''); // CSS animation properties
-  text = text.replace(/transform[^;]*;/g, ''); // CSS transform properties
-  text = text.replace(/cubic-bezier\([^)]*\)/g, ''); // CSS timing functions
-  text = text.replace(/translateY?\([^)]*\)/g, ''); // CSS translate functions
+  console.log('🧹 Starting aggressive clean...');
   
-  // Remove UI text
-  text = text.replace(/Add at least one email/gi, '');
-  text = text.replace(/Email this answer/gi, '');
-  text = text.replace(/Share Answer/gi, '');
-  text = text.replace(/Provided by iAsk\.ai/gi, '');
-  text = text.replace(/Ask AI\.?/gi, '');
-  text = text.replace(/spinner_[a-zA-Z0-9]+/gi, '');
+  // Split text into words to analyze
+  let words = text.split(/\s+/);
+  console.log(`📊 Total words: ${words.length}`);
   
-  // Remove loading states
-  text = text.replace(/Thinking\.\.\.|Loading\.\.\.|Please wait/gi, '');
+  // Remove CSS/technical words
+  words = words.filter(word => {
+    // Skip CSS classes and technical stuff
+    if (/^\.?\w*_[a-zA-Z0-9]+$/.test(word)) return false; // .spinner_abc123
+    if (/^@?\w*(keyframes|animation|transform|cubic|bezier)/.test(word)) return false;
+    if (/^\{.*\}$/.test(word)) return false; // CSS blocks
+    if (/^(animation|transform|translate)/.test(word)) return false;
+    if (/\d+s$/.test(word) && word.includes('infinite')) return false; // 1.05s infinite
+    
+    return true;
+  });
   
-  // Remove footnotes and links
-  text = text.replace(/\[\d+\]/g, '');
-  text = text.replace(/https?:\/\/[^\s]+/g, '');
+  console.log(`📊 After CSS filter: ${words.length} words`);
   
-  // Clean whitespace
-  text = text.replace(/\s+/g, ' ').trim();
+  // Join back
+  let cleaned = words.join(' ');
   
-  // Remove common prefixes
-  text = text.replace(/^(Answer:|Response:|Result:)\s*/i, '');
-  
-  return text;
-}
-
-// Check if text is real content (not UI elements)
-function isRealContent(text) {
-  if (!text || text.length < 10) return false;
-  
-  // Reject if contains technical/UI patterns
-  const badPatterns = [
-    /spinner|animation|keyframe|css|transform/i,
-    /email|share|add.*email/i,
-    /thinking|loading|please wait/i,
-    /^[^a-zA-Z]*$/ // Only special characters
+  // Remove specific UI phrases
+  const uiPhrases = [
+    'Add at least one email',
+    'Email this answer',
+    'Share Answer',
+    'Provided by iAsk.ai',
+    'Ask AI',
+    'Thinking...',
+    'Loading...',
+    'Please wait'
   ];
   
-  if (badPatterns.some(pattern => pattern.test(text))) return false;
+  uiPhrases.forEach(phrase => {
+    cleaned = cleaned.replace(new RegExp(phrase, 'gi'), '');
+  });
   
-  // Should contain normal words
-  const hasWords = /\b(is|are|was|were|the|and|or|but|can|will|this|that|when|where|how|what|a|an|in|on|at|to|for|of|with|by)\b/i.test(text);
+  // Remove footnotes and URLs
+  cleaned = cleaned.replace(/\[\d+\]/g, ''); // [1], [2]
+  cleaned = cleaned.replace(/https?:\/\/[^\s]+/g, ''); // URLs
   
-  return hasWords;
+  // Clean whitespace
+  cleaned = cleaned.replace(/\s+/g, ' ').trim();
+  
+  // Remove common prefixes
+  cleaned = cleaned.replace(/^(Answer:|Response:|Result:)\s*/i, '');
+  
+  // If text is too short, return empty
+  if (cleaned.length < 20) return '';
+  
+  // Take first substantial sentence if text is very long
+  if (cleaned.length > 500) {
+    const sentences = cleaned.split(/[.!?]+/);
+    const goodSentences = sentences
+      .filter(s => s.trim().length > 30)
+      .filter(s => !/email|share|spinner/i.test(s))
+      .slice(0, 3); // Take first 3 good sentences
+    
+    if (goodSentences.length > 0) {
+      cleaned = goodSentences.join('. ').trim() + '.';
+    }
+  }
+  
+  console.log(`✅ Final cleaned text: ${cleaned.length} chars`);
+  return cleaned;
 }
 
-// Simple sleep function
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
