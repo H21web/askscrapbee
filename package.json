@@ -3,11 +3,8 @@
   "version": "1.0.0",
   "description": "Bing AI Chat API using Playwright",
   "main": "api/scrape.js",
-  "scripts": {
-    "postinstall": "npx playwright install chromium --with-deps"
-  },
   "dependencies": {
-    "playwright": "^1.40.0"
+    "playwright-chromium": "^1.40.0"
   },
   "engines": {
     "node": "22.x"
