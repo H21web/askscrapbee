@@ -1,7 +1,7 @@
 {
-  "name": "iask-scraper", 
+  "name": "bing-copilot-scraper",
   "version": "1.0.0",
-  "description": "iask.ai content extractor",
+  "description": "Bing Copilot search answer extractor",
   "main": "api/scrape.js",
   "dependencies": {
     "jsdom": "^23.0.0",
