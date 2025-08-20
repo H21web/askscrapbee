@@ -20,169 +20,207 @@ module.exports = async (req, res) => {
     console.log(`Processing query: ${query}`);
     const pageUrl = `https://iask.ai/q?mode=question&options[detail_level]=concise&q=${encodeURIComponent(query)}`;
 
-    // Smart polling: Keep checking until real content appears
-    const maxAttempts = 15; // Maximum 15 attempts (about 45 seconds)
-    const checkInterval = 3000; // Check every 3 seconds
+    const maxAttempts = 15;
+    const checkInterval = 3000;
     
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       console.log(`Attempt ${attempt}/${maxAttempts}: Checking for content...`);
       
-      // Wait before each attempt (except first)
       if (attempt > 1) {
         await new Promise(resolve => setTimeout(resolve, checkInterval));
       }
       
-      // Fetch the page
       const response = await fetch(pageUrl, {
         headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
           'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'Accept-Language': 'en-US,en;q=0.5',
-          'Cache-Control': 'no-cache',
-          'Pragma': 'no-cache'
+          'Cache-Control': 'no-cache'
         }
       });
 
-      if (!response.ok) {
-        console.log(`HTTP ${response.status} on attempt ${attempt}`);
-        continue;
-      }
+      if (!response.ok) continue;
 
       const html = await response.text();
-      const content = extractRealContent(html);
+      const cleanText = extractCleanAnswerText(html);
       
-      if (content.isRealContent) {
-        console.log(`✅ Real content found on attempt ${attempt}!`);
+      if (cleanText) {
+        console.log(`✅ Clean answer found on attempt ${attempt}!`);
         return res.status(200).json({
           success: true,
-          text: content.text,
+          text: cleanText,
           query: query,
           url: pageUrl,
-          source: 'iask-ai-smart-wait',
           attempt: attempt,
-          waitTime: (attempt - 1) * checkInterval,
           timestamp: new Date().toISOString(),
-          textLength: content.text.length
+          textLength: cleanText.length
         });
       } else {
-        console.log(`⏳ Still ${content.status} on attempt ${attempt}...`);
+        console.log(`⏳ No clean content yet on attempt ${attempt}...`);
       }
     }
 
-    // If we reach here, content never loaded
     return res.status(408).json({
       error: 'Content load timeout',
-      message: 'iask.ai is taking longer than expected to generate an answer. This might be due to high traffic or a complex question.',
-      query: query,
-      attempts: maxAttempts,
-      totalWaitTime: (maxAttempts - 1) * checkInterval,
-      suggestion: 'Try again with a simpler question or wait a few minutes'
+      message: 'Could not extract clean answer text from iask.ai',
+      query: query
     });
 
   } catch (error) {
-    console.error('Scraping error:', error.message);
     return res.status(500).json({
       error: 'Scraping failed',
       details: error.message,
-      query: query,
-      timestamp: new Date().toISOString()
+      query: query
     });
   }
 };
 
-// Smart content extraction function
-function extractRealContent(html) {
+// Enhanced clean text extraction
+function extractCleanAnswerText(html) {
   try {
     const dom = new JSDOM(html);
     const doc = dom.window.document;
     
-    // Look for the output div
-    const outputDiv = doc.querySelector('div#output');
-    if (!outputDiv) {
-      return { isRealContent: false, status: 'no-output-div', text: null };
-    }
-
-    // Get all text content from output div
-    const allText = outputDiv.textContent || '';
-    
-    // Check for loading/thinking states (skip these)
-    const loadingIndicators = [
-      'Thinking...',
-      'Loading...',
-      'Please wait',
-      'Answer Provided by Ask ai',
-      'Generating answer',
-      'Processing',
-      'Working on it'
+    // Remove all unwanted elements first
+    const unwantedSelectors = [
+      'style', 'script', 'noscript',           // Technical elements
+      '.spinner', '[class*="spinner"]',         // Loading spinners
+      'button', 'input', 'form',               // UI elements
+      '.share', '.email', '[class*="share"]',   // Share buttons
+      '.footer', '.header', '.nav',            // Navigation
+      '[class*="animation"]', '[class*="keyframe"]' // CSS animations
     ];
     
-    const isLoading = loadingIndicators.some(indicator => 
-      allText.toLowerCase().includes(indicator.toLowerCase())
-    );
-    
-    if (isLoading) {
-      const foundIndicator = loadingIndicators.find(indicator => 
-        allText.toLowerCase().includes(indicator.toLowerCase())
-      );
-      return { isRealContent: false, status: `loading (${foundIndicator})`, text: null };
-    }
-    
-    // Look for actual content in paragraphs
-    const paragraphs = outputDiv.querySelectorAll('p');
-    
-    for (const p of paragraphs) {
-      if (p && p.textContent) {
-        let text = p.textContent.trim();
+    unwantedSelectors.forEach(selector => {
+      const elements = doc.querySelectorAll(selector);
+      elements.forEach(el => el.remove());
+    });
+
+    // Look for the main answer content
+    const outputDiv = doc.querySelector('div#output');
+    if (!outputDiv) return null;
+
+    // Try to find the main answer paragraph(s)
+    const answerSelectors = [
+      'div#output > p:first-of-type',     // First paragraph in output
+      'div#output p:not(:last-child)',    // All paragraphs except last (often contains UI text)
+      'div#output .answer',               // Answer-specific class
+      'div#output .content',              // Content-specific class
+      'div#output div:first-child p'     // First div's paragraphs
+    ];
+
+    for (const selector of answerSelectors) {
+      const elements = doc.querySelectorAll(selector);
+      
+      for (const element of elements) {
+        if (!element) continue;
         
-        // Must be substantial content (more than 50 characters)
-        if (text.length < 50) continue;
+        // Clone element to avoid modifying original
+        const clonedElement = element.cloneNode(true);
         
-        // Skip if it contains loading indicators
-        const hasLoadingText = loadingIndicators.some(indicator => 
-          text.toLowerCase().includes(indicator.toLowerCase())
-        );
-        if (hasLoadingText) continue;
+        // Remove links, footnotes, citations, buttons
+        const unwantedTags = ['a', 'sup', 'sub', 'cite', 'button', 'span[class*="spinner"]'];
+        unwantedTags.forEach(tag => {
+          clonedElement.querySelectorAll(tag).forEach(el => el.remove());
+        });
         
-        // This looks like real content - clean it up
-        const clonedP = p.cloneNode(true);
+        let text = clonedElement.textContent || '';
         
-        // Remove links, footnotes, and other elements
-        Array.from(clonedP.querySelectorAll('a, sup, sub, cite')).forEach(el => el.remove());
+        // Clean the text thoroughly
+        text = cleanText(text);
         
-        text = clonedP.textContent || '';
-        
-        // Clean up the text
-        text = text.replace(/\[\d+(?:\]\[\d+)*\]/g, ''); // Remove [1], [1][2], etc.
-        text = text.replace(/\[.*?\]/g, '');              // Remove any other brackets
-        text = text.replace(/https?:\/\/[^\s]+/g, '');    // Remove URLs
-        text = text.replace(/\s+/g, ' ').trim();          // Normalize whitespace
-        text = text.replace(/^(Answer:|Response:|Result:)\s*/i, ''); // Remove prefixes
-        
-        if (text.length > 30) {
-          return { isRealContent: true, status: 'content-found', text: text };
+        // Validate if this is actually answer content
+        if (isValidAnswerText(text)) {
+          return text;
         }
       }
     }
+
+    // Fallback: Try to extract from the entire output div but be more selective
+    let allText = outputDiv.textContent || '';
+    allText = cleanText(allText);
     
-    // If no paragraphs found, check if output div has any substantial text
-    if (allText.length > 50 && !isLoading) {
-      // Clean the text from the entire div
-      let cleanText = allText
-        .replace(/\[\d+(?:\]\[\d+)*\]/g, '')
-        .replace(/\[.*?\]/g, '')
-        .replace(/https?:\/\/[^\s]+/g, '')
-        .replace(/\s+/g, ' ')
-        .trim();
+    // Split into sentences and take the first substantial ones
+    const sentences = allText.split(/[.!?]+/).filter(s => s.trim().length > 20);
+    
+    if (sentences.length > 0) {
+      // Take first 2-3 sentences that look like actual content
+      const cleanSentences = sentences.slice(0, 3).filter(sentence => {
+        const s = sentence.trim();
+        return s.length > 20 && 
+               !s.toLowerCase().includes('email') &&
+               !s.toLowerCase().includes('share') &&
+               !s.toLowerCase().includes('spinner') &&
+               !s.toLowerCase().includes('animation') &&
+               !s.toLowerCase().includes('provided by');
+      });
       
-      if (cleanText.length > 30) {
-        return { isRealContent: true, status: 'div-content-found', text: cleanText };
+      if (cleanSentences.length > 0) {
+        return cleanSentences.join('. ').trim() + '.';
       }
     }
-    
-    return { isRealContent: false, status: 'no-substantial-content', text: null };
+
+    return null;
     
   } catch (error) {
-    console.error('Content extraction error:', error.message);
-    return { isRealContent: false, status: 'extraction-error', text: null };
+    console.error('Text extraction error:', error.message);
+    return null;
   }
+}
+
+// Comprehensive text cleaning function
+function cleanText(text) {
+  if (!text) return '';
+  
+  // Remove CSS and animation code
+  text = text.replace(/\.\w+\{[^}]*\}/g, '');                    // CSS classes
+  text = text.replace(/@keyframes[^}]*\{[^}]*\}/g, '');          // CSS keyframes
+  text = text.replace(/animation[^;]*;/g, '');                   // CSS animation properties
+  text = text.replace(/transform[^;]*;/g, '');                   // CSS transform properties
+  
+  // Remove UI text patterns
+  text = text.replace(/Email this answer/gi, '');
+  text = text.replace(/Add Email/gi, '');
+  text = text.replace(/Add at least one email/gi, '');
+  text = text.replace(/Share Answer/gi, '');
+  text = text.replace(/Provided by iAsk\.ai/gi, '');
+  text = text.replace(/Ask AI\.?/gi, '');
+  text = text.replace(/spinner_\w+/gi, '');
+  
+  // Remove footnotes and references
+  text = text.replace(/\[\d+\]/g, '');                           // [1], [1], etc.
+  text = text.replace(/\[.*?\]/g, '');                           // Any other brackets
+  
+  // Remove URLs
+  text = text.replace(/https?:\/\/[^\s]+/g, '');
+  
+  // Remove extra whitespace and normalize
+  text = text.replace(/\s+/g, ' ');                              // Multiple spaces to single
+  text = text.replace(/\n+/g, ' ');                              // Newlines to spaces
+  text = text.trim();
+  
+  // Remove common prefixes
+  text = text.replace(/^(Answer:|Response:|Result:)\s*/i, '');
+  
+  return text;
+}
+
+// Validate if text looks like a real answer
+function isValidAnswerText(text) {
+  if (!text || text.length < 30) return false;
+  
+  // Check for unwanted patterns
+  const unwantedPatterns = [
+    /email/i, /share/i, /spinner/i, /animation/i, /keyframes/i,
+    /\.css/i, /transform/i, /cubic-bezier/i, /translateY/i,
+    /answer provided by/i, /ask ai/i, /loading/i, /thinking/i
+  ];
+  
+  const hasUnwantedContent = unwantedPatterns.some(pattern => pattern.test(text));
+  if (hasUnwantedContent) return false;
+  
+  // Should look like actual content (has common words)
+  const commonWords = ['the', 'is', 'are', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by'];
+  const hasCommonWords = commonWords.some(word => text.toLowerCase().includes(word));
+  
+  return hasCommonWords && text.length >= 30;
 }
