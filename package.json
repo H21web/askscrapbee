@@ -3,11 +3,9 @@
   "version": "1.0.0",
   "description": "Dynamic scraper for iask.ai",
   "main": "api/scrape.js",
-  "scripts": {
-    "postinstall": "npx puppeteer browsers install chrome"
-  },
   "dependencies": {
-    "puppeteer": "^24.16.2"
+    "puppeteer-core": "^24.16.2",
+    "chrome-aws-lambda": "^10.1.0"
   },
   "engines": {
     "node": "22.x"
