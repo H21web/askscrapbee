@@ -1,11 +1,10 @@
 {
-  "name": "bing-copilot-scraper",
+  "name": "bing-ai-chat-api",
   "version": "1.0.0",
-  "description": "Bing Copilot search answer extractor",
+  "description": "Bing AI Chat API using Playwright",
   "main": "api/scrape.js",
   "dependencies": {
-    "jsdom": "^23.0.0",
-    "node-fetch": "^2.7.0"
+    "playwright": "^1.40.0"
   },
   "engines": {
     "node": "22.x"
