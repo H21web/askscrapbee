@@ -17,18 +17,19 @@ module.exports = async (req, res) => {
   }
 
   try {
-    console.log(`Processing query: ${query}`);
-    const pageUrl = `https://iask.ai/q?mode=question&options[detail_level]=concise&q=${encodeURIComponent(query)}`;
-
-    // Aggressive content detection - multiple strategies
-    const maxAttempts = 8;
-    const interval = 2500; // 2.5 seconds
+    console.log(`🔍 Processing: ${query}`);
     
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      console.log(`🔍 Attempt ${attempt}/${maxAttempts}: Scanning for content...`);
+    // Try the direct page approach first
+    const pageUrl = `https://iask.ai/q?mode=question&options[detail_level]=concise&q=${encodeURIComponent(query)}`;
+    
+    // Simple approach: Multiple quick requests with increasing delays
+    const delays = [0, 3000, 6000, 10000]; // 0s, 3s, 6s, 10s
+    
+    for (let i = 0; i < delays.length; i++) {
+      console.log(`⏱️ Attempt ${i + 1}: ${delays[i]}ms delay`);
       
-      if (attempt > 1) {
-        await new Promise(resolve => setTimeout(resolve, interval));
+      if (delays[i] > 0) {
+        await new Promise(resolve => setTimeout(resolve, delays[i]));
       }
       
       try {
@@ -37,266 +38,184 @@ module.exports = async (req, res) => {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.9',
-            'Cache-Control': 'no-cache, no-store, must-revalidate',
-            'Pragma': 'no-cache'
+            'Referer': 'https://iask.ai/',
+            'Cache-Control': 'no-cache'
           }
         });
 
-        if (!response.ok) {
-          console.log(`❌ HTTP ${response.status} on attempt ${attempt}`);
-          continue;
-        }
-
-        const html = await response.text();
-        console.log(`📄 HTML length: ${html.length} characters`);
-        
-        // Multi-strategy content extraction
-        const content = extractWithMultipleStrategies(html);
-        
-        if (content && content.length >= 30) {
-          console.log(`✅ SUCCESS: Found ${content.length} characters on attempt ${attempt}!`);
-          console.log(`📝 Content preview: "${content.substring(0, 100)}..."`);
+        if (response.ok) {
+          const html = await response.text();
+          console.log(`📄 HTML received: ${html.length} chars`);
           
-          return res.status(200).json({
-            success: true,
-            text: content,
-            query: query,
-            url: pageUrl,
-            attempt: attempt,
-            totalTime: (attempt - 1) * interval,
-            timestamp: new Date().toISOString(),
-            textLength: content.length
-          });
-        } else if (content) {
-          console.log(`📏 Found ${content.length} chars (need 30+), continuing...`);
-        } else {
-          console.log(`❌ No content detected on attempt ${attempt}`);
+          // Simple extraction
+          const content = simpleExtract(html);
+          
+          if (content && content.length >= 30) {
+            console.log(`✅ SUCCESS: ${content.length} chars found!`);
+            
+            return res.status(200).json({
+              success: true,
+              text: content,
+              query: query,
+              url: pageUrl,
+              attempt: i + 1,
+              delay: delays[i],
+              source: 'iask-ai',
+              timestamp: new Date().toISOString(),
+              textLength: content.length
+            });
+          }
         }
-        
-      } catch (fetchError) {
-        console.log(`🌐 Network error on attempt ${attempt}: ${fetchError.message}`);
-        continue;
+      } catch (e) {
+        console.log(`❌ Request ${i + 1} failed: ${e.message}`);
       }
     }
-
+    
+    // If direct page fails, try to find if there's an API endpoint
+    try {
+      console.log('🔄 Trying alternative approaches...');
+      
+      // Method 1: Check for API endpoints
+      const apiAttempts = [
+        `https://iask.ai/api/search?q=${encodeURIComponent(query)}&format=json`,
+        `https://iask.ai/search?q=${encodeURIComponent(query)}&format=json`,
+        `https://api.iask.ai/search?query=${encodeURIComponent(query)}`
+      ];
+      
+      for (const apiUrl of apiAttempts) {
+        try {
+          const apiResponse = await fetch(apiUrl, {
+            headers: {
+              'Accept': 'application/json',
+              'User-Agent': 'Mozilla/5.0',
+              'Referer': 'https://iask.ai/'
+            }
+          });
+          
+          if (apiResponse.ok) {
+            const data = await apiResponse.json();
+            if (data && (data.answer || data.response || data.text)) {
+              const text = data.answer || data.response || data.text;
+              if (text.length >= 30) {
+                return res.status(200).json({
+                  success: true,
+                  text: cleanText(text),
+                  query: query,
+                  source: 'iask-api',
+                  timestamp: new Date().toISOString()
+                });
+              }
+            }
+          }
+        } catch (e) {
+          continue;
+        }
+      }
+      
+    } catch (e) {
+      console.log('API attempts failed');
+    }
+    
     return res.status(404).json({
-      error: 'Content extraction failed',
-      message: 'Unable to extract readable content from iask.ai. This could be due to: 1) The question being too specific/niche, 2) iask.ai experiencing issues, 3) Content being blocked or restricted.',
+      error: 'iask.ai content not accessible',
+      message: 'Unable to extract answer from iask.ai after multiple attempts. This could be due to the question being too specific, content still loading, or temporary access issues.',
       query: query,
-      attempts: maxAttempts,
-      totalTime: (maxAttempts - 1) * interval,
+      attempts: delays.length,
+      totalTime: Math.max(...delays),
       suggestions: [
-        'Try rephrasing the question in simpler terms',
-        'Use English keywords if using non-English terms',
-        'Check if the topic exists in general knowledge',
-        'Try again in a few minutes'
+        'Try rephrasing with simpler, more general terms',
+        'Wait a minute and try again',
+        'Check if the question contains proper English keywords'
       ]
     });
 
   } catch (error) {
     return res.status(500).json({
-      error: 'Service error',
+      error: 'Request failed',
       details: error.message,
       query: query
     });
   }
 };
 
-// MULTI-STRATEGY content extraction
-function extractWithMultipleStrategies(html) {
+// SIMPLE extraction - no overcomplicated logic
+function simpleExtract(html) {
   try {
     const dom = new JSDOM(html);
     const doc = dom.window.document;
     
-    console.log('🔍 Trying extraction strategies...');
+    // Debug: Check what's in the page
+    console.log('🔍 Looking for content...');
     
-    // Strategy 1: Direct output div content
-    let content = tryOutputDivStrategy(doc);
-    if (content) {
-      console.log('✅ Strategy 1 (output div) succeeded');
-      return content;
+    // Simple approach: Look for any div with id="output" 
+    const outputDiv = doc.querySelector('#output');
+    if (!outputDiv) {
+      console.log('❌ No #output div found');
+      return null;
     }
     
-    // Strategy 2: Script tag JSON data
-    content = tryScriptDataStrategy(doc);
-    if (content) {
-      console.log('✅ Strategy 2 (script data) succeeded');
-      return content;
+    console.log('✅ Found #output div');
+    
+    // Get all text from the output div
+    let allText = outputDiv.textContent || outputDiv.innerText || '';
+    console.log(`📝 Raw text length: ${allText.length}`);
+    console.log(`📝 First 100 chars: "${allText.substring(0, 100)}"`);
+    
+    // Clean the text
+    allText = cleanText(allText);
+    
+    // If we have substantial text, extract first meaningful paragraph
+    if (allText.length > 50) {
+      // Split into sentences and take the first substantial ones
+      const sentences = allText.split(/[.!?]+/)
+        .map(s => s.trim())
+        .filter(s => s.length > 20)
+        .filter(s => !isJunkText(s));
+      
+      if (sentences.length > 0) {
+        // Take first 1-2 sentences that make sense
+        const result = sentences.slice(0, 2).join('. ').trim();
+        if (result.length >= 30) {
+          return result + (result.endsWith('.') ? '' : '.');
+        }
+      }
     }
     
-    // Strategy 3: Meta tags and structured data
-    content = tryMetaDataStrategy(doc);
-    if (content) {
-      console.log('✅ Strategy 3 (meta data) succeeded');
-      return content;
-    }
-    
-    // Strategy 4: Broad content search
-    content = tryBroadSearchStrategy(doc);
-    if (content) {
-      console.log('✅ Strategy 4 (broad search) succeeded');
-      return content;
-    }
-    
-    console.log('❌ All extraction strategies failed');
     return null;
     
   } catch (error) {
-    console.error('🔥 Extraction error:', error.message);
+    console.error('❌ Extraction error:', error.message);
     return null;
   }
 }
 
-// Strategy 1: Look for output div content
-function tryOutputDivStrategy(doc) {
-  const selectors = [
-    'div#output',
-    '[id="output"]', 
-    '.output',
-    '[data-testid="output"]',
-    '[data-testid="answer"]'
-  ];
-  
-  for (const selector of selectors) {
-    const container = doc.querySelector(selector);
-    if (container) {
-      console.log(`📦 Found container with selector: ${selector}`);
-      
-      // Look for paragraphs inside
-      const paragraphs = container.querySelectorAll('p, div, span');
-      for (const p of paragraphs) {
-        const text = extractAndCleanText(p);
-        if (isValidContent(text)) {
-          return text;
-        }
-      }
-      
-      // Try the container itself
-      const containerText = extractAndCleanText(container);
-      if (isValidContent(containerText)) {
-        return containerText;
-      }
-    }
-  }
-  return null;
-}
-
-// Strategy 2: Look for JSON data in script tags
-function tryScriptDataStrategy(doc) {
-  const scripts = doc.querySelectorAll('script');
-  
-  for (const script of scripts) {
-    const content = script.textContent || '';
-    
-    // Look for JSON objects with answer data
-    const jsonPatterns = [
-      /"answer":\s*"([^"]{30,})"/,
-      /"response":\s*"([^"]{30,})"/,
-      /"text":\s*"([^"]{30,})"/,
-      /"content":\s*"([^"]{30,})"/
-    ];
-    
-    for (const pattern of jsonPatterns) {
-      const match = content.match(pattern);
-      if (match && match[1]) {
-        const text = match[1].replace(/\\n/g, ' ').replace(/\\"/g, '"');
-        const cleaned = simpleClean(text);
-        if (isValidContent(cleaned)) {
-          return cleaned;
-        }
-      }
-    }
-  }
-  return null;
-}
-
-// Strategy 3: Look for meta tags and structured data
-function tryMetaDataStrategy(doc) {
-  const metaSelectors = [
-    'meta[property="og:description"]',
-    'meta[name="description"]',
-    'meta[property="article:description"]'
-  ];
-  
-  for (const selector of metaSelectors) {
-    const meta = doc.querySelector(selector);
-    if (meta) {
-      const content = meta.getAttribute('content');
-      if (content) {
-        const cleaned = simpleClean(content);
-        if (isValidContent(cleaned)) {
-          return cleaned;
-        }
-      }
-    }
-  }
-  return null;
-}
-
-// Strategy 4: Broad search for any substantial text
-function tryBroadSearchStrategy(doc) {
-  // Remove unwanted elements
-  const unwanted = doc.querySelectorAll('script, style, nav, header, footer, .nav, .header, .footer');
-  unwanted.forEach(el => el.remove());
-  
-  // Look for substantial text blocks
-  const textContainers = doc.querySelectorAll('main, article, .content, .answer, section, div');
-  
-  for (const container of textContainers) {
-    const text = extractAndCleanText(container);
-    if (isValidContent(text)) {
-      // Take first substantial sentence/paragraph
-      const sentences = text.split(/[.!?]+/).filter(s => s.trim().length > 20);
-      if (sentences.length > 0) {
-        return sentences[0].trim() + '.';
-      }
-      return text;
-    }
-  }
-  return null;
-}
-
-// Extract and clean text from element
-function extractAndCleanText(element) {
-  if (!element) return '';
-  
-  // Clone to avoid modifying original
-  const clone = element.cloneNode(true);
-  
-  // Remove unwanted elements
-  clone.querySelectorAll('script, style, button, a[href], .share, .email, [class*="spinner"], [class*="animation"]').forEach(el => el.remove());
-  
-  let text = clone.textContent || '';
-  return simpleClean(text);
-}
-
-// Simple but effective text cleaning
-function simpleClean(text) {
+// Clean text function
+function cleanText(text) {
   if (!text) return '';
   
-  text = text.replace(/Email this answer|Share Answer|Add Email|Provided by iAsk\.ai|Ask AI|Thinking\.\.\.|Loading\.\.\./gi, '');
-  text = text.replace(/\[\d+\]/g, ''); // Remove [1], [2], etc.
-  text = text.replace(/https?:\/\/[^\s]+/g, ''); // Remove URLs
-  text = text.replace(/\s+/g, ' ').trim(); // Normalize whitespace
+  // Remove obvious UI elements
+  text = text.replace(/Email this answer|Share Answer|Add Email|Provided by iAsk\.ai|Ask AI|Thinking\.\.\.|Loading\.\.\.|Please wait/gi, '');
+  
+  // Remove CSS and technical stuff
+  text = text.replace(/\.\w+\{[^}]*\}|@keyframes[^}]*\{[^}]*\}|animation[^;]*;|transform[^;]*;/g, '');
+  
+  // Remove footnotes and links
+  text = text.replace(/\[\d+\]/g, '');
+  text = text.replace(/https?:\/\/[^\s]+/g, '');
+  
+  // Normalize whitespace
+  text = text.replace(/\s+/g, ' ').trim();
   
   return text;
 }
 
-// Validate if content is substantial and real
-function isValidContent(text) {
-  if (!text || text.length < 20) return false;
-  
-  // Reject obvious non-content
-  const rejectPatterns = [
-    /^(thinking|loading|please wait|error|not found)/i,
-    /spinner|animation|keyframes|css/i,
-    /email|share|add email/i
+// Check if text is junk/UI text
+function isJunkText(text) {
+  const junkPatterns = [
+    /email|share|add|spinner|animation|css|keyframe/i,
+    /thinking|loading|please wait|provided by/i,
+    /^.{1,10}$/  // Too short
   ];
   
-  if (rejectPatterns.some(pattern => pattern.test(text))) return false;
-  
-  // Should have normal language patterns
-  const hasNormalWords = /\b(is|are|was|were|the|and|or|but|can|will|may|this|that|when|where|how|what|why|a|an|in|on|at|to|for|of|with|by)\b/i.test(text);
-  
-  return hasNormalWords && text.length >= 20 && text.length <= 2000;
+  return junkPatterns.some(pattern => pattern.test(text));
 }
