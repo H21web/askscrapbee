@@ -1,4 +1,5 @@
-const chromium = require('chrome-aws-lambda');
+const puppeteer = require('puppeteer');
+const chromium = require('@sparticuz/chromium');
 
 module.exports = async (req, res) => {
   // Set CORS headers
@@ -24,13 +25,12 @@ module.exports = async (req, res) => {
   try {
     console.log(`Processing query: ${query}`);
     
-    // Launch browser using chrome-aws-lambda
-    browser = await chromium.puppeteer.launch({
+    // Launch browser with @sparticuz/chromium
+    browser = await puppeteer.launch({
       args: chromium.args,
       defaultViewport: chromium.defaultViewport,
-      executablePath: await chromium.executablePath,
+      executablePath: await chromium.executablePath(),
       headless: chromium.headless,
-      ignoreHTTPSErrors: true,
     });
     
     const page = await browser.newPage();
@@ -83,7 +83,7 @@ module.exports = async (req, res) => {
         query: query,
         url: targetUrl,
         timestamp: new Date().toISOString(),
-        source: 'chrome-aws-lambda',
+        source: 'sparticuz-chromium',
         textLength: result.length
       });
     } else {
