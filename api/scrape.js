@@ -1,4 +1,4 @@
-const puppeteer = require('puppeteer');
+const chromium = require('chrome-aws-lambda');
 
 module.exports = async (req, res) => {
   // Set CORS headers
@@ -20,33 +20,22 @@ module.exports = async (req, res) => {
     });
   }
 
-  let browser;
+  let browser = null;
   try {
     console.log(`Processing query: ${query}`);
     
-    // Launch browser with serverless-optimized settings
-    browser = await puppeteer.launch({
-      headless: true,
-      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--no-first-run',
-        '--no-zygote',
-        '--single-process',
-        '--disable-gpu',
-        '--disable-background-timer-throttling',
-        '--disable-backgrounding-occluded-windows',
-        '--disable-renderer-backgrounding'
-      ]
+    // Launch browser using chrome-aws-lambda
+    browser = await chromium.puppeteer.launch({
+      args: chromium.args,
+      defaultViewport: chromium.defaultViewport,
+      executablePath: await chromium.executablePath,
+      headless: chromium.headless,
+      ignoreHTTPSErrors: true,
     });
     
     const page = await browser.newPage();
     
-    // Set viewport and user agent
-    await page.setViewport({ width: 1200, height: 800 });
+    // Set user agent
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36');
     
     // Navigate to iask.ai with the query
@@ -94,7 +83,7 @@ module.exports = async (req, res) => {
         query: query,
         url: targetUrl,
         timestamp: new Date().toISOString(),
-        source: 'puppeteer',
+        source: 'chrome-aws-lambda',
         textLength: result.length
       });
     } else {
@@ -117,7 +106,7 @@ module.exports = async (req, res) => {
     });
     
   } finally {
-    if (browser) {
+    if (browser !== null) {
       try {
         await browser.close();
       } catch (closeError) {
