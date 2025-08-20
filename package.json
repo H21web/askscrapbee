@@ -3,11 +3,9 @@
   "version": "1.0.0",
   "description": "Dynamic scraper for iask.ai",
   "main": "api/scrape.js",
-  "scripts": {
-    "postinstall": "npx playwright install chromium --with-deps"
-  },
   "dependencies": {
-    "playwright": "^1.40.0"
+    "puppeteer-core": "^21.0.0",
+    "@sparticuz/chromium": "^131.0.0"
   },
   "engines": {
     "node": "22.x"
