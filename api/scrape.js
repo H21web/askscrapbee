@@ -24,14 +24,10 @@ module.exports = async (req, res) => {
   try {
     console.log(`Processing query: ${query}`);
     
-    // Launch browser with explicit Chrome path and serverless-optimized settings
+    // Launch browser with serverless-optimized settings
     browser = await puppeteer.launch({
       headless: true,
-      // Use system Chrome if available, fallback to bundled
-      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || 
-                     '/usr/bin/google-chrome-stable' || 
-                     '/usr/bin/google-chrome' || 
-                     undefined,
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -43,9 +39,7 @@ module.exports = async (req, res) => {
         '--disable-gpu',
         '--disable-background-timer-throttling',
         '--disable-backgrounding-occluded-windows',
-        '--disable-renderer-backgrounding',
-        '--disable-features=TranslateUI',
-        '--disable-ipc-flooding-protection'
+        '--disable-renderer-backgrounding'
       ]
     });
     
@@ -114,17 +108,6 @@ module.exports = async (req, res) => {
     
   } catch (error) {
     console.error('Scraping error:', error.message);
-    
-    // If Chrome not found, provide helpful error
-    if (error.message.includes('Could not find Chrome')) {
-      return res.status(500).json({ 
-        error: 'Chrome browser not available',
-        message: 'Chrome installation failed. This may be due to Vercel build constraints.',
-        details: error.message,
-        solution: 'Try redeploying or contact support if issue persists',
-        query: query
-      });
-    }
     
     return res.status(500).json({ 
       error: 'Scraping failed', 
