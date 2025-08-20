@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>iask.ai Scraper API</title>
+    <meta charset="utf-8">
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
+        code { background: #f4f4f4; padding: 2px 4px; border-radius: 3px; }
+        pre { background: #f4f4f4; padding: 15px; border-radius: 5px; overflow-x: auto; }
+        .example { margin: 10px 0; }
+    </style>
+</head>
+<body>
+    <h1>🤖 iask.ai Scraper API</h1>
+    <p>This is a serverless API for scraping content from iask.ai using Puppeteer.</p>
+    
+    <h2>Usage:</h2>
+    <p><code>GET /api/scrape?query=your_question</code></p>
+    
+    <h2>Examples:</h2>
+    <div class="example">
+        <strong>Example 1:</strong> 
+        <a href="/api/scrape?query=What is artificial intelligence?" target="_blank">
+            /api/scrape?query=What is artificial intelligence?
+        </a>
+    </div>
+    <div class="example">
+        <strong>Example 2:</strong> 
+        <a href="/api/scrape?query=How does machine learning work?" target="_blank">
+            /api/scrape?query=How does machine learning work?
+        </a>
+    </div>
+    
+    <h2>Response Format:</h2>
+    <pre>{
+  "success": true,
+  "text": "Extracted content from iask.ai...",
+  "query": "your_question",
+  "url": "https://iask.ai/q?mode=question&options[detail_level]=concise&q=...",
+  "timestamp": "2025-08-20T08:25:00.000Z",
+  "source": "puppeteer",
+  "textLength": 245
+}</pre>
+
+    <h2>Error Response:</h2>
+    <pre>{
+  "error": "Error type",
+  "details": "Error description",
+  "query": "your_question"
+}</pre>
+
+    <h2>Features:</h2>
+    <ul>
+        <li>✅ Dynamic content extraction with Puppeteer</li>
+        <li>✅ Handles JavaScript-rendered content</li>
+        <li>✅ CORS enabled for browser requests</li>
+        <li>✅ Automatic Chrome browser management</li>
+        <li>✅ Error handling and logging</li>
+    </ul>
+</body>
+</html>
