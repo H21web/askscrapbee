@@ -20,145 +20,175 @@ module.exports = async (req, res) => {
     console.log(`Processing query: ${query}`);
     const pageUrl = `https://iask.ai/q?mode=question&options[detail_level]=concise&q=${encodeURIComponent(query)}`;
 
-    // Reduced attempts for faster response - max 20 seconds
-    const maxAttempts = 7;  // Reduced from 15
-    const checkInterval = 3000; // 3 seconds
+    // Smart polling - return immediately when first paragraph >= 30 chars
+    const maxAttempts = 10;  
+    const quickInterval = 2000; // Check every 2 seconds
     
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      console.log(`Attempt ${attempt}/${maxAttempts}: Looking for first paragraph...`);
+      console.log(`Attempt ${attempt}: Quick check for first paragraph...`);
       
+      // Small delay between attempts (except first)
       if (attempt > 1) {
-        await new Promise(resolve => setTimeout(resolve, checkInterval));
+        await new Promise(resolve => setTimeout(resolve, quickInterval));
       }
       
-      const response = await fetch(pageUrl, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          'Accept': 'text/html',
-          'Cache-Control': 'no-cache'
+      try {
+        // Fast fetch with shorter timeout
+        const response = await Promise.race([
+          fetch(pageUrl, {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+              'Accept': 'text/html',
+              'Cache-Control': 'no-cache'
+            }
+          }),
+          new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Fetch timeout')), 5000)
+          )
+        ]);
+
+        if (!response.ok) {
+          console.log(`HTTP ${response.status} on attempt ${attempt}`);
+          continue;
         }
-      });
 
-      if (!response.ok) continue;
-
-      const html = await response.text();
-      const firstParagraph = extractFirstParagraphOnly(html);
-      
-      if (firstParagraph) {
-        console.log(`✅ First paragraph found on attempt ${attempt}!`);
-        return res.status(200).json({
-          success: true,
-          text: firstParagraph,
-          query: query,
-          url: pageUrl,
-          attempt: attempt,
-          waitTime: (attempt - 1) * checkInterval,
-          timestamp: new Date().toISOString(),
-          textLength: firstParagraph.length
-        });
+        const html = await response.text();
+        
+        // SMART: Check for first paragraph immediately
+        const firstParagraph = getFirstValidParagraph(html);
+        
+        if (firstParagraph && firstParagraph.length >= 30) {
+          console.log(`🚀 INSTANT SUCCESS: Found ${firstParagraph.length} chars on attempt ${attempt}!`);
+          
+          return res.status(200).json({
+            success: true,
+            text: firstParagraph,
+            query: query,
+            url: pageUrl,
+            attempt: attempt,
+            totalTime: (attempt - 1) * quickInterval,
+            timestamp: new Date().toISOString(),
+            textLength: firstParagraph.length,
+            note: "Returned as soon as 30+ characters found"
+          });
+        } else if (firstParagraph) {
+          console.log(`📏 Found ${firstParagraph.length} chars (< 30), continuing...`);
+        } else {
+          console.log(`❌ No valid paragraph yet on attempt ${attempt}`);
+        }
+        
+      } catch (fetchError) {
+        console.log(`Fetch error on attempt ${attempt}: ${fetchError.message}`);
+        continue;
       }
-      
-      console.log(`⏳ No content paragraph yet (attempt ${attempt})...`);
     }
 
-    // Quick timeout - don't wait too long
-    return res.status(408).json({
-      error: 'Quick timeout',
-      message: 'First paragraph is taking longer than expected to load (20 seconds). Try a simpler question or check back later.',
+    // Only timeout if truly no content found
+    return res.status(404).json({
+      error: 'Content not found',
+      message: 'Could not find a paragraph with 30+ characters after checking for 20 seconds',
       query: query,
-      maxWaitTime: (maxAttempts - 1) * checkInterval,
-      suggestion: 'Try rephrasing your question to be more specific'
+      attempts: maxAttempts,
+      suggestion: 'Try a different question or check if iask.ai is accessible'
     });
 
   } catch (error) {
     return res.status(500).json({
-      error: 'Request failed',
+      error: 'Service error',
       details: error.message,
       query: query
     });
   }
 };
 
-// Fast first paragraph extraction - stops as soon as found
-function extractFirstParagraphOnly(html) {
+// FAST paragraph extraction - returns immediately when valid content found
+function getFirstValidParagraph(html) {
   try {
     const dom = new JSDOM(html);
     const doc = dom.window.document;
     
-    // Look for output div
+    // Quick check: Is there an output div?
     const outputDiv = doc.querySelector('div#output');
-    if (!outputDiv) return null;
+    if (!outputDiv) {
+      console.log('No output div found');
+      return null;
+    }
 
-    // Quick check: Find first substantial paragraph only
-    const paragraphSelectors = [
-      'div#output > p:first-of-type',          // First direct paragraph
-      'div#output p:first-child',              // First child paragraph  
-      'div#output > div:first-child > p:first-of-type', // First nested paragraph
-      'div#output p'                           // Any paragraph (take first valid one)
+    // PRIORITY ORDER: Check most likely selectors first
+    const prioritySelectors = [
+      'div#output > p',                    // Direct paragraphs
+      'div#output > div > p',              // One level nested
+      'div#output p',                      // Any paragraph in output
+      'div#output > div:first-child p'    // First div's paragraphs
     ];
 
-    for (const selector of paragraphSelectors) {
-      const paragraph = doc.querySelector(selector);
+    for (const selector of prioritySelectors) {
+      const paragraphs = doc.querySelectorAll(selector);
       
-      if (paragraph) {
-        // Clone to avoid modifying original
+      for (const paragraph of paragraphs) {
+        if (!paragraph) continue;
+        
+        // Quick clone and clean
         const clone = paragraph.cloneNode(true);
         
-        // Remove unwanted elements quickly
-        clone.querySelectorAll('a, sup, sub, button, span[class*="spinner"]').forEach(el => el.remove());
+        // Remove obvious UI elements quickly
+        clone.querySelectorAll('a, sup, sub, button, .spinner, [class*="share"], [class*="email"]').forEach(el => el.remove());
         
         let text = clone.textContent || '';
         
-        // Quick clean
-        text = quickCleanText(text);
+        // INSTANT clean (minimal processing)
+        text = instantClean(text);
         
-        // Fast validation - is this actual content?
-        if (isFirstParagraphValid(text)) {
+        // RETURN IMMEDIATELY if valid paragraph found
+        if (isInstantValid(text)) {
+          console.log(`✅ Valid paragraph found: "${text.substring(0, 50)}..."`);
           return text;
         }
       }
     }
 
+    console.log('No valid paragraphs in output div');
     return null;
     
   } catch (error) {
-    console.error('Fast extraction error:', error.message);
+    console.error('Extraction error:', error.message);
     return null;
   }
 }
 
-// Quick text cleaning - minimal processing for speed
-function quickCleanText(text) {
+// INSTANT text cleaning - only essential cleaning for speed
+function instantClean(text) {
   if (!text) return '';
   
-  // Remove only essential unwanted content
-  text = text.replace(/Email this answer/gi, '');
-  text = text.replace(/Share Answer/gi, '');
-  text = text.replace(/Provided by iAsk\.ai/gi, '');
-  text = text.replace(/Ask AI\.?/gi, '');
-  text = text.replace(/\[\d+\]/g, '');              // Remove [1], [2]
-  text = text.replace(/\s+/g, ' ').trim();          // Normalize spaces
+  // Remove only the most obvious UI text
+  text = text.replace(/Email this answer|Share Answer|Add Email|Provided by iAsk\.ai|Ask AI/gi, '');
+  
+  // Remove footnotes
+  text = text.replace(/\[\d+\]/g, '');
+  
+  // Clean whitespace
+  text = text.replace(/\s+/g, ' ').trim();
   
   return text;
 }
 
-// Fast validation - check if this looks like a real answer paragraph
-function isFirstParagraphValid(text) {
-  // Must be substantial
-  if (!text || text.length < 40) return false;
+// INSTANT validation - very fast checks
+function isInstantValid(text) {
+  // Must have minimum length
+  if (!text || text.length < 10) return false;
   
-  // Quick reject patterns
-  const rejectPatterns = [
-    /thinking/i, /loading/i, /please wait/i,
-    /answer provided by/i, /email/i, /share/i,
-    /spinner/i, /animation/i, /\.css/i
-  ];
+  // Quick reject obvious non-content
+  if (/^(thinking|loading|please wait|answer provided|email|share)/i.test(text)) {
+    return false;
+  }
   
-  // If contains reject patterns, skip
-  if (rejectPatterns.some(pattern => pattern.test(text))) return false;
+  // Quick reject CSS/technical content
+  if (/spinner|animation|keyframes|transform|css/i.test(text)) {
+    return false;
+  }
   
-  // Quick positive check - should have normal words
-  const hasNormalWords = /\b(is|are|the|and|or|but|can|will|may|this|that)\b/i.test(text);
+  // Quick positive check - looks like real text
+  const hasRealWords = /\b(is|are|was|were|the|and|or|but|can|will|this|that|when|where|how|what|why)\b/i.test(text);
   
-  return hasNormalWords && text.length >= 40 && text.length <= 1000; // Reasonable length
+  return hasRealWords && text.length >= 10;
 }
