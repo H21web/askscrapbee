@@ -3,6 +3,7 @@ const jsdom = require('jsdom');
 const { JSDOM } = jsdom;
 
 module.exports = async (req, res) => {
+  // CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -16,191 +17,164 @@ module.exports = async (req, res) => {
     return res.status(400).json({ error: 'Query parameter missing' });
   }
 
-  const url = `https://iask.ai/q?mode=question&options[detail_level]=concise&q=${encodeURIComponent(query)}`;
-  
-  for (let attempt = 1; attempt <= 6; attempt++) {
-    console.log(`Attempt ${attempt}: Looking for first paragraph...`);
+  try {
+    console.log(`🔍 Processing query: ${query}`);
     
-    if (attempt > 1) {
-      await sleep(2500);
-    }
+    const url = `https://www.bing.com/copilotsearch?q=${encodeURIComponent(query)}&FORM=CSSCOP`;
+    console.log(`🌐 URL: ${url}`);
     
-    try {
-      const response = await fetch(url, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-      });
+    // Try multiple times with delays to handle loading
+    const maxAttempts = 5;
+    const interval = 3000; // 3 seconds
+    
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      console.log(`📡 Attempt ${attempt}/${maxAttempts}: Fetching Bing Copilot...`);
       
-      if (!response.ok) continue;
-      
-      const html = await response.text();
-      const paragraph = getFirstParagraphOnly(html);
-      
-      if (paragraph && paragraph.length >= 30) {
-        return res.status(200).json({
-          success: true,
-          text: paragraph,
-          query: query,
-          attempt: attempt,
-          timestamp: new Date().toISOString()
-        });
+      if (attempt > 1) {
+        await sleep(interval);
       }
       
-    } catch (error) {
-      console.log(`Attempt ${attempt} failed:`, error.message);
+      try {
+        const response = await fetch(url, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Cache-Control': 'no-cache'
+          }
+        });
+
+        if (!response.ok) {
+          console.log(`❌ HTTP ${response.status} on attempt ${attempt}`);
+          continue;
+        }
+
+        const html = await response.text();
+        console.log(`📄 HTML received: ${html.length} characters`);
+        
+        const answerText = extractStrongTagsFromAnswerContainer(html);
+        
+        if (answerText && answerText.length >= 20) {
+          console.log(`✅ SUCCESS: Found answer with ${answerText.length} characters`);
+          
+          return res.status(200).json({
+            success: true,
+            text: answerText,
+            query: query,
+            url: url,
+            attempt: attempt,
+            source: 'bing-copilot',
+            timestamp: new Date().toISOString(),
+            textLength: answerText.length
+          });
+        } else if (answerText) {
+          console.log(`📏 Found text but too short: ${answerText.length} chars`);
+        } else {
+          console.log(`❌ No answer found on attempt ${attempt}`);
+        }
+        
+      } catch (fetchError) {
+        console.log(`🌐 Network error on attempt ${attempt}: ${fetchError.message}`);
+        continue;
+      }
     }
+
+    return res.status(404).json({
+      error: 'No answer found',
+      message: 'Could not extract answer from Bing Copilot search after multiple attempts',
+      query: query,
+      url: url,
+      attempts: maxAttempts
+    });
+
+  } catch (error) {
+    console.error('🔥 Service error:', error.message);
+    return res.status(500).json({
+      error: 'Service error',
+      details: error.message,
+      query: query
+    });
   }
-  
-  return res.status(404).json({
-    error: 'No paragraph found',
-    message: 'Could not find a clean first paragraph',
-    query: query
-  });
 };
 
-// Extract ONLY the first actual content paragraph
-function getFirstParagraphOnly(html) {
+// Extract text from <strong> tags inside <div class="answer_container">
+function extractStrongTagsFromAnswerContainer(html) {
   try {
+    console.log('🔍 Parsing HTML for answer container...');
+    
     const dom = new JSDOM(html);
-    const doc = dom.window.document;
+    const document = dom.window.document;
     
-    // Find the output div
-    const outputDiv = doc.querySelector('#output');
-    if (!outputDiv) return null;
+    // Find the answer container div
+    const answerContainer = document.querySelector('div.answer_container');
+    if (!answerContainer) {
+      console.log('❌ No div.answer_container found');
+      return null;
+    }
     
-    // REMOVE all unwanted elements completely
-    const junkSelectors = [
-      'style', 'script', 'button', 'a', 
-      '.spinner', '[class*="spinner"]', 
-      '[class*="share"]', '[class*="email"]',
-      'sup', 'sub', 'cite'
-    ];
+    console.log('✅ Found div.answer_container');
     
-    junkSelectors.forEach(selector => {
-      outputDiv.querySelectorAll(selector).forEach(el => el.remove());
+    // Find all <strong> tags inside the container
+    const strongTags = answerContainer.querySelectorAll('strong');
+    if (!strongTags || strongTags.length === 0) {
+      console.log('❌ No <strong> tags found inside answer_container');
+      return null;
+    }
+    
+    console.log(`📝 Found ${strongTags.length} <strong> tags`);
+    
+    // Extract text from strong tags and filter
+    const textParts = [];
+    
+    strongTags.forEach((strong, index) => {
+      let text = strong.textContent || '';
+      text = text.trim();
+      
+      console.log(`📄 Strong tag ${index + 1}: "${text.substring(0, 50)}..."`);
+      
+      // Skip if it's loading text or too short
+      if (text.length < 5) return;
+      if (isLoadingText(text)) {
+        console.log(`⏳ Skipping loading text: "${text}"`);
+        return;
+      }
+      
+      textParts.push(text);
     });
     
-    // Look for the FIRST actual paragraph with content
-    const paragraphs = outputDiv.querySelectorAll('p');
-    
-    for (const p of paragraphs) {
-      let text = p.textContent || '';
-      
-      // Skip if it's obviously UI/CSS content
-      if (isJunk(text)) continue;
-      
-      // Clean the paragraph text
-      text = cleanParagraph(text);
-      
-      // If it's substantial and looks like real content, return it
-      if (text.length >= 30 && looksLikeContent(text)) {
-        console.log(`✅ Found first paragraph: "${text.substring(0, 50)}..."`);
-        return text;
-      }
+    if (textParts.length === 0) {
+      console.log('❌ No valid text found in strong tags');
+      return null;
     }
     
-    // If no <p> tags, try div elements
-    const divs = outputDiv.querySelectorAll('div');
-    for (const div of divs) {
-      let text = div.textContent || '';
-      
-      if (isJunk(text)) continue;
-      
-      text = cleanParagraph(text);
-      
-      if (text.length >= 30 && looksLikeContent(text)) {
-        // Extract first sentence/paragraph from div
-        const firstSentence = text.split(/[.!?]+/)[0].trim();
-        if (firstSentence.length >= 30) {
-          return firstSentence + '.';
-        }
-        return text;
-      }
-    }
+    // Join all text parts
+    const finalText = textParts.join(' ').trim();
+    console.log(`✅ Extracted text: "${finalText.substring(0, 100)}..."`);
     
-    return null;
+    return finalText;
     
   } catch (error) {
-    console.log('Error:', error.message);
+    console.error('❌ Extraction error:', error.message);
     return null;
   }
 }
 
-// Check if text is junk (UI/CSS content)
-function isJunk(text) {
-  if (!text || text.length < 10) return true;
-  
-  const junkPatterns = [
-    /Add Email|Share Answer|Email this answer/i,
-    /Provided by iAsk\.ai|Ask AI/i,
-    /Thinking\.\.\.|Loading\.\.\.|Please wait/i,
-    /spinner|animation|keyframes|transform|cubic-bezier/i,
-    /\.[a-zA-Z_]+\{.*\}/,  // CSS classes
-    /@keyframes/,
-    /animation-delay|translateY/i,
-    /^[^a-zA-Z]*$/ // Only symbols/numbers
+// Check if text indicates loading state
+function isLoadingText(text) {
+  const loadingPatterns = [
+    /loading/i,
+    /please wait/i,
+    /thinking/i,
+    /searching/i,
+    /processing/i,
+    /\.\.\./,
+    /^[.\s]*$/
   ];
   
-  return junkPatterns.some(pattern => pattern.test(text));
+  return loadingPatterns.some(pattern => pattern.test(text));
 }
 
-// Clean paragraph text thoroughly
-function cleanParagraph(text) {
-  if (!text) return '';
-  
-  // Remove CSS completely
-  text = text.replace(/\.[a-zA-Z_][a-zA-Z0-9_]*\{[^}]*\}/g, ''); // .class{...}
-  text = text.replace(/@keyframes[^}]*\{[^}]*\}/g, ''); // @keyframes{...}
-  text = text.replace(/animation[^;]*;/g, ''); // animation properties
-  text = text.replace(/transform[^;]*;/g, ''); // transform properties
-  text = text.replace(/cubic-bezier\([^)]*\)/g, ''); // timing functions
-  text = text.replace(/translateY?\([^)]*\)/g, ''); // translate functions
-  text = text.replace(/animation-delay[^;]*;/g, ''); // animation-delay
-  text = text.replace(/spinner_[a-zA-Z0-9]+/g, ''); // spinner classes
-  
-  // Remove UI text
-  text = text.replace(/Add at least one email/gi, '');
-  text = text.replace(/Add Email/gi, '');
-  text = text.replace(/Email this answer/gi, '');
-  text = text.replace(/Share Answer/gi, '');
-  text = text.replace(/Provided by iAsk\.ai/gi, '');
-  text = text.replace(/Ask AI\.?/gi, '');
-  
-  // Remove loading states
-  text = text.replace(/Thinking\.\.\.|Loading\.\.\.|Please wait/gi, '');
-  
-  // Remove footnotes and links
-  text = text.replace(/\[\d+\]/g, '');
-  text = text.replace(/https?:\/\/[^\s]+/g, '');
-  
-  // Clean whitespace and symbols
-  text = text.replace(/\s+/g, ' ');
-  text = text.replace(/[–—]+/g, ''); // Remove dashes
-  text = text.replace(/^\W+|\W+$/g, ''); // Remove leading/trailing symbols
-  text = text.trim();
-  
-  return text;
-}
-
-// Check if text looks like actual content
-function looksLikeContent(text) {
-  if (!text || text.length < 20) return false;
-  
-  // Should have normal English words
-  const commonWords = ['is', 'are', 'was', 'were', 'the', 'and', 'or', 'but', 'can', 'will', 'this', 'that', 'a', 'an'];
-  const hasCommonWords = commonWords.some(word => 
-    new RegExp(`\\b${word}\\b`, 'i').test(text)
-  );
-  
-  // Should not be mostly technical terms
-  const techRatio = (text.match(/\b(animation|transform|spinner|css|keyframes)\b/gi) || []).length;
-  const totalWords = text.split(/\s+/).length;
-  const isMostlyTech = techRatio / totalWords > 0.3;
-  
-  return hasCommonWords && !isMostlyTech;
-}
-
+// Sleep utility function
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
