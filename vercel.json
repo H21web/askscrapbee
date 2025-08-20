@@ -6,5 +6,6 @@
     }
   },
   "regions": ["iad1"],
-  "buildCommand": "npm install"
+  "buildCommand": "",
+  "outputDirectory": ""
 }
