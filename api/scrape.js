@@ -15,113 +15,57 @@ module.exports = async (req, res) => {
   }
 
   try {
-    // Use iask.ai's actual API endpoint (the one their website uses)
-    const response = await fetch('https://iask.ai/api/v1/search', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Origin': 'https://iask.ai',
-        'Referer': 'https://iask.ai/'
-      },
-      body: JSON.stringify({
-        query: query,
-        options: {
-          detail_level: 'concise'
-        }
-      })
-    });
-
-    if (response.ok) {
-      const data = await response.json();
+    // Use DuckDuckGo's instant answer API (free, no auth needed)
+    const ddgResponse = await fetch(`https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`);
+    
+    if (ddgResponse.ok) {
+      const data = await ddgResponse.json();
       
-      // Extract the answer text
-      let answerText = '';
-      if (data.answer) {
-        answerText = data.answer;
-      } else if (data.response) {
-        answerText = data.response;
-      } else if (data.result) {
-        answerText = data.result;
-      } else if (data.text) {
-        answerText = data.text;
+      // Try different fields for the answer
+      let answer = '';
+      if (data.Abstract && data.Abstract.length > 20) {
+        answer = data.Abstract;
+      } else if (data.Definition && data.Definition.length > 20) {
+        answer = data.Definition;
+      } else if (data.RelatedTopics && data.RelatedTopics[0] && data.RelatedTopics[0].Text) {
+        answer = data.RelatedTopics.Text;
       }
 
-      if (answerText && answerText.length > 20) {
-        // Clean the text - remove footnotes, links, etc.
-        let cleanText = answerText
-          .replace(/\[\d+\]/g, '')           // Remove [1], [2], etc.
-          .replace(/\[.*?\]/g, '')           // Remove any other brackets
-          .replace(/https?:\/\/[^\s]+/g, '') // Remove URLs
-          .replace(/\s+/g, ' ')              // Normalize whitespace
-          .trim();
-
+      if (answer) {
         return res.status(200).json({
           success: true,
-          text: cleanText,
+          text: answer.trim(),
           query: query,
-          source: 'iask-internal-api',
+          source: 'duckduckgo-api',
           timestamp: new Date().toISOString()
         });
       }
     }
 
-    // Fallback: Try alternative API endpoint
-    const altResponse = await fetch(`https://iask.ai/search?format=json&q=${encodeURIComponent(query)}`, {
-      headers: {
-        'Accept': 'application/json',
-        'User-Agent': 'Mozilla/5.0 (compatible; APIBot/1.0)'
-      }
-    });
-
-    if (altResponse.ok) {
-      const altData = await altResponse.json();
-      if (altData && altData.answer) {
+    // Fallback: Use Wikipedia API for factual questions
+    const wikiResponse = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(query)}`);
+    
+    if (wikiResponse.ok) {
+      const wikiData = await wikiResponse.json();
+      if (wikiData.extract && wikiData.extract.length > 20) {
         return res.status(200).json({
           success: true,
-          text: altData.answer.replace(/\[\d+\]/g, '').trim(),
+          text: wikiData.extract,
           query: query,
-          source: 'iask-alt-api'
+          source: 'wikipedia-api'
         });
       }
     }
 
-    // Last resort: Try to mimic the AJAX request their frontend makes
-    const ajaxResponse = await fetch('https://iask.ai/ajax/search', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'X-Requested-With': 'XMLHttpRequest',
-        'Accept': 'application/json',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-      },
-      body: `q=${encodeURIComponent(query)}&detail_level=concise`
-    });
-
-    if (ajaxResponse.ok) {
-      const ajaxData = await ajaxResponse.json();
-      if (ajaxData && (ajaxData.answer || ajaxData.response)) {
-        const text = ajaxData.answer || ajaxData.response;
-        return res.status(200).json({
-          success: true,
-          text: text.replace(/\[\d+\]/g, '').trim(),
-          query: query,
-          source: 'iask-ajax'
-        });
-      }
-    }
-
-    // If all API attempts fail
     return res.status(404).json({
       error: 'No answer found',
-      message: 'Unable to get answer from iask.ai APIs',
+      message: 'Unable to find a relevant answer for your question',
       query: query
     });
 
   } catch (error) {
     return res.status(500).json({
-      error: 'Request failed',
+      error: 'Service unavailable',
       details: error.message,
       query: query
     });
