@@ -1,10 +1,10 @@
 {
-  "name": "bing-ai-chat-api",
+  "name": "bing-search-api",
   "version": "1.0.0",
-  "description": "Bing AI Chat API using Playwright",
+  "description": "Simple Bing search API",
   "main": "api/scrape.js",
   "dependencies": {
-    "playwright-chromium": "^1.40.0"
+    "node-fetch": "^2.7.0"
   },
   "engines": {
     "node": "22.x"
