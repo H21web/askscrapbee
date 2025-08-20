@@ -20,14 +20,17 @@ module.exports = async (req, res) => {
     console.log(`Processing query: ${query}`);
     const pageUrl = `https://iask.ai/q?mode=question&options[detail_level]=concise&q=${encodeURIComponent(query)}`;
 
-    // Method: Multiple requests with increasing delays to handle lazy loading
-    const delays = [3000, 5000, 8000]; // 3s, 5s, 8s delays
+    // Smart polling: Keep checking until real content appears
+    const maxAttempts = 15; // Maximum 15 attempts (about 45 seconds)
+    const checkInterval = 3000; // Check every 3 seconds
     
-    for (let i = 0; i < delays.length; i++) {
-      console.log(`Attempt ${i + 1}: Waiting ${delays[i]}ms for content to load...`);
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      console.log(`Attempt ${attempt}/${maxAttempts}: Checking for content...`);
       
-      // Wait for the specified delay
-      await new Promise(resolve => setTimeout(resolve, delays[i]));
+      // Wait before each attempt (except first)
+      if (attempt > 1) {
+        await new Promise(resolve => setTimeout(resolve, checkInterval));
+      }
       
       // Fetch the page
       const response = await fetch(pageUrl, {
@@ -41,94 +44,39 @@ module.exports = async (req, res) => {
       });
 
       if (!response.ok) {
-        console.log(`HTTP ${response.status} on attempt ${i + 1}`);
+        console.log(`HTTP ${response.status} on attempt ${attempt}`);
         continue;
       }
 
       const html = await response.text();
-      console.log(`HTML length: ${html.length}`);
-
-      // Parse and extract content
-      const dom = new JSDOM(html);
-      const doc = dom.window.document;
+      const content = extractRealContent(html);
       
-      // Try multiple selectors to find the answer
-      const selectors = [
-        'div#output p:first-of-type',
-        'div#output p',
-        '#output .answer p',
-        '#output div p',
-        '[data-testid="answer"] p'
-      ];
-
-      let extractedText = null;
-      
-      for (const selector of selectors) {
-        const elements = doc.querySelectorAll(selector);
-        
-        for (const element of elements) {
-          if (element && element.textContent) {
-            let text = element.textContent.trim();
-            
-            // Skip if it's just loading text or empty
-            if (text.length < 20 || 
-                text.includes('Answer Provided by Ask ai') || 
-                text.includes('Loading...') ||
-                text.includes('Please wait')) {
-              continue;
-            }
-
-            // Found valid content - clean it up
-            console.log(`Found content with selector: ${selector}`);
-            
-            // Remove links, footnotes, etc.
-            const clonedElement = element.cloneNode(true);
-            Array.from(clonedElement.querySelectorAll('a, sup, sub')).forEach(el => el.remove());
-            
-            text = clonedElement.textContent || '';
-            text = text.replace(/\[\d+(?:\]\[\d+)*\]/g, ''); // Remove [1], [1][2], etc.
-            text = text.replace(/\[.*?\]/g, '');              // Remove any other brackets
-            text = text.replace(/https?:\/\/[^\s]+/g, '');    // Remove URLs
-            text = text.replace(/\s+/g, ' ').trim();          // Normalize whitespace
-            
-            if (text.length > 20) {
-              extractedText = text;
-              break;
-            }
-          }
-        }
-        
-        if (extractedText) break;
-      }
-
-      // If we found content, return it
-      if (extractedText) {
-        console.log(`Successfully extracted content: ${extractedText.substring(0, 100)}...`);
+      if (content.isRealContent) {
+        console.log(`✅ Real content found on attempt ${attempt}!`);
         return res.status(200).json({
           success: true,
-          text: extractedText,
+          text: content.text,
           query: query,
           url: pageUrl,
-          source: 'iask-ai-delayed',
-          attempt: i + 1,
-          delay: delays[i],
+          source: 'iask-ai-smart-wait',
+          attempt: attempt,
+          waitTime: (attempt - 1) * checkInterval,
           timestamp: new Date().toISOString(),
-          textLength: extractedText.length
+          textLength: content.text.length
         });
+      } else {
+        console.log(`⏳ Still ${content.status} on attempt ${attempt}...`);
       }
-
-      console.log(`No content found on attempt ${i + 1}`);
     }
 
-    // If all attempts failed
-    return res.status(404).json({
-      error: 'Content not loaded',
-      message: 'Unable to load answer content from iask.ai after multiple attempts. The page may be taking longer than expected to load.',
+    // If we reach here, content never loaded
+    return res.status(408).json({
+      error: 'Content load timeout',
+      message: 'iask.ai is taking longer than expected to generate an answer. This might be due to high traffic or a complex question.',
       query: query,
-      url: pageUrl,
-      attempts: delays.length,
-      maxDelay: Math.max(...delays),
-      suggestion: 'Try again later or rephrase your question'
+      attempts: maxAttempts,
+      totalWaitTime: (maxAttempts - 1) * checkInterval,
+      suggestion: 'Try again with a simpler question or wait a few minutes'
     });
 
   } catch (error) {
@@ -141,3 +89,100 @@ module.exports = async (req, res) => {
     });
   }
 };
+
+// Smart content extraction function
+function extractRealContent(html) {
+  try {
+    const dom = new JSDOM(html);
+    const doc = dom.window.document;
+    
+    // Look for the output div
+    const outputDiv = doc.querySelector('div#output');
+    if (!outputDiv) {
+      return { isRealContent: false, status: 'no-output-div', text: null };
+    }
+
+    // Get all text content from output div
+    const allText = outputDiv.textContent || '';
+    
+    // Check for loading/thinking states (skip these)
+    const loadingIndicators = [
+      'Thinking...',
+      'Loading...',
+      'Please wait',
+      'Answer Provided by Ask ai',
+      'Generating answer',
+      'Processing',
+      'Working on it'
+    ];
+    
+    const isLoading = loadingIndicators.some(indicator => 
+      allText.toLowerCase().includes(indicator.toLowerCase())
+    );
+    
+    if (isLoading) {
+      const foundIndicator = loadingIndicators.find(indicator => 
+        allText.toLowerCase().includes(indicator.toLowerCase())
+      );
+      return { isRealContent: false, status: `loading (${foundIndicator})`, text: null };
+    }
+    
+    // Look for actual content in paragraphs
+    const paragraphs = outputDiv.querySelectorAll('p');
+    
+    for (const p of paragraphs) {
+      if (p && p.textContent) {
+        let text = p.textContent.trim();
+        
+        // Must be substantial content (more than 50 characters)
+        if (text.length < 50) continue;
+        
+        // Skip if it contains loading indicators
+        const hasLoadingText = loadingIndicators.some(indicator => 
+          text.toLowerCase().includes(indicator.toLowerCase())
+        );
+        if (hasLoadingText) continue;
+        
+        // This looks like real content - clean it up
+        const clonedP = p.cloneNode(true);
+        
+        // Remove links, footnotes, and other elements
+        Array.from(clonedP.querySelectorAll('a, sup, sub, cite')).forEach(el => el.remove());
+        
+        text = clonedP.textContent || '';
+        
+        // Clean up the text
+        text = text.replace(/\[\d+(?:\]\[\d+)*\]/g, ''); // Remove [1], [1][2], etc.
+        text = text.replace(/\[.*?\]/g, '');              // Remove any other brackets
+        text = text.replace(/https?:\/\/[^\s]+/g, '');    // Remove URLs
+        text = text.replace(/\s+/g, ' ').trim();          // Normalize whitespace
+        text = text.replace(/^(Answer:|Response:|Result:)\s*/i, ''); // Remove prefixes
+        
+        if (text.length > 30) {
+          return { isRealContent: true, status: 'content-found', text: text };
+        }
+      }
+    }
+    
+    // If no paragraphs found, check if output div has any substantial text
+    if (allText.length > 50 && !isLoading) {
+      // Clean the text from the entire div
+      let cleanText = allText
+        .replace(/\[\d+(?:\]\[\d+)*\]/g, '')
+        .replace(/\[.*?\]/g, '')
+        .replace(/https?:\/\/[^\s]+/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      
+      if (cleanText.length > 30) {
+        return { isRealContent: true, status: 'div-content-found', text: cleanText };
+      }
+    }
+    
+    return { isRealContent: false, status: 'no-substantial-content', text: null };
+    
+  } catch (error) {
+    console.error('Content extraction error:', error.message);
+    return { isRealContent: false, status: 'extraction-error', text: null };
+  }
+}
